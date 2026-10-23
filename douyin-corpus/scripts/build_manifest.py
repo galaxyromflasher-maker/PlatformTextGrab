@@ -32,6 +32,20 @@ def load_json(path: Path):
     return data
 
 
+def normalize_total(raw) -> int | None:
+    """页面总数可能是 1355、'1355'、'1.4万'、'1.4w'，统一成整数。"""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    m = re.search(r"([\d.]+)\s*([万wW]?)", text)
+    if not m:
+        return None
+    value = float(m.group(1))
+    if m.group(2):
+        value *= 10000
+    return int(value)
+
+
 def classify(title: str, rules: list[dict]) -> str:
     for rule in rules:
         if re.search(rule["pattern"], title, re.I):
@@ -70,6 +84,7 @@ def main() -> int:
     parser.add_argument("--raw", required=True)
     parser.add_argument("--page-total", default=None)
     parser.add_argument("--rules", default=None)
+    parser.add_argument("--raw2", default=None, help="第二次抓取的原始 JSON，用于差异诊断")
     args = parser.parse_args()
 
     project = Path(args.project).resolve()
@@ -140,7 +155,23 @@ def main() -> int:
     videos = sum(1 for r in rows if r["类型"] == "视频")
     images = len(rows) - videos
     dates = [r["发布日期"] for r in rows if r["发布日期"]]
-    page_total = args.page_total or raw.get("tabTotal")
+    page_total = normalize_total(args.page_total or raw.get("tabTotal"))
+
+    # 差异诊断：连抓两次比对 ID 集合。两次一致说明不是加载遗漏，
+    # 而是主页计数里含私密/审核中/已下架的作品。
+    diff2 = None
+    if args.raw2:
+        raw2 = load_json(Path(args.raw2))
+        ids2 = {str(i.get("id")) for i in (raw2.get("items") or []) if i.get("id")}
+        only_first = sorted(set(seen) - ids2)
+        only_second = sorted(ids2 - set(seen))
+        diff2 = {
+            "第二次抓取条数": len(ids2),
+            "仅第一次有": len(only_first),
+            "仅第二次有": len(only_second),
+            "样例": (only_first[:5] + only_second[:5]),
+            "结论": "两次集合一致，差异来自页面计数含非公开作品" if not only_first and not only_second else "两次集合不一致，可能存在加载遗漏",
+        }
 
     ledger_path = project / "供AI查阅" / "quota-ledger.json"
     ledger = load_json(ledger_path) if ledger_path.exists() else {"modelChain": [], "models": []}
@@ -160,7 +191,9 @@ def main() -> int:
         "音视频总秒数": total_seconds,
         "视频总秒数": audio_seconds,
         "音视频总小时": round(total_seconds / 3600, 2),
-        "对账结论": "一致" if str(page_total).strip() == str(len(rows)) else "不一致",
+        "对账结论": "一致" if page_total == len(rows) else "不一致",
+        "差异条数": (page_total - len(rows)) if page_total else None,
+        "差异诊断": diff2,
         "额度分配": plan["plan"],
         "预计费用CNY": plan["costCny"],
         "额度缺口秒数": plan["shortfallSeconds"],

@@ -91,11 +91,24 @@
     }
     const author = (all[0] && all[0].author) || {};
     const tab = document.querySelector('[data-e2e=user-tab-count]');
+
+    // tabTotal 兜底：该元素常返回 null，退化为从「作品 1355」这类文本正则提取
+    let tabTotal = tab ? tab.innerText : null;
+    if (!tabTotal) {
+      const tabs = Array.from(document.querySelectorAll('[data-e2e]'))
+        .map((e) => e.innerText || '')
+        .join(' ')
+        .slice(0, 2000);
+      const m = tabs.match(/作品\s*([\d.]+[万wW]?)/);
+      if (m) tabTotal = m[1];
+    }
+
     return JSON.stringify({
       profileUrl: location.href,
       nickname: author.nickname || document.title.replace('的抖音', ''),
       secUid: author.sec_uid || '',
-      tabTotal: tab ? tab.innerText : null,
+      tabTotal: tabTotal,
+      tabTotalFromFallback: !(tab && tab.innerText),
       capturedAt: new Date().toISOString(),
       count: items.length,
       items,

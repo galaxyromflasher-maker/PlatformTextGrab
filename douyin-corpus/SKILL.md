@@ -47,6 +47,23 @@ description: This skill should be used when the user wants to extract full spoke
 
 停在 G1，明确告知"登录未生效，无法取全量"，给出重新扫码选项。**未验证全量不得进入第二轮。**
 
+### 浏览器层（内置，不必现搭）
+
+```bash
+python scripts/browser.py check                      # 检查 playwright + Edge
+python scripts/browser.py login --profile <目录>      # 开有窗口的 Edge 扫码，成功后自动关窗
+python scripts/browser.py resolve --id <抖音号>       # 抖音号 -> 主页 URL
+python scripts/browser.py capture --url <主页URL> --out raw.json --profile <目录>
+```
+
+三条硬规则：
+
+1. **不下载 Chromium**，用 `channel="msedge"` 复用本机 Edge
+2. **二维码不截图**——异步渲染，截到的是占位图。开有窗口的浏览器让用户自己扫
+3. **登录成功会主动关窗**，这是正常行为，需提前告知用户，否则会被当成崩溃
+
+登录态存在 `_browser-profile/`，跨命令复用，**不要删除、不要外传**。
+
 ---
 
 ## 第二轮：G2 清单
@@ -67,7 +84,9 @@ description: This skill should be used when the user wants to extract full spoke
 
 1. 开跑前检查：台账一致性、直链有效性、磁盘空间、待处理条数
 2. 执行 `python scripts/transcribe.py --project <目录> --workers 3`
-3. 脚本自动处理：模型链切换、额度预判、预算熔断、失败重试、断点续跑
+3. 脚本自动处理：模型链切换、额度预判、预算熔断、失败重试、断点续跑、音轨完整性校验
+4. **原片默认保留**（`--cleanup-mp4` 才边跑边删）。大批量逐条删除会触发宿主保护，跑完统一清理
+5. 代码缺陷类异常（KeyError 等）会立即中止并打印堆栈，不参与重试熔断
 4. 每 20 条或每 3 分钟报一行进度
 5. 收尾出 `转写结果.csv` + `G3-转写完成.md` → **结束**
 
@@ -89,6 +108,9 @@ description: This skill should be used when the user wants to extract full spoke
 | 一次主页滚动 | 可拿到全部作品的完整字段与直链，无需逐条请求详情接口 |
 | 想只留音频 | 也必须下完整 mp4，再抽音轨、删原片 |
 | **查询剩余额度接口** | **官方未提供**，实测全部 404，不要尝试 |
+| **逐条删原片** | 宿主对单轮删除有阈值（约 50 个），超过会杀进程。默认保留原片，收尾统一清理 |
+| **`[data-e2e=user-tab-count]`** | 常返回 null，需从「作品 1355」「1.4万」这类文本正则兜底 |
+| **页面数 > 抓取数** | 差值多为私密/审核中/已下架。连抓两次比对 ID 集合，两次一致即可判定非加载遗漏 |
 
 ## 禁止事项
 
@@ -102,6 +124,8 @@ description: This skill should be used when the user wants to extract full spoke
 8. 对话里贴 JSON、MD 里指向 JSON
 9. 使用 yt-dlp 下载抖音
 10. 尝试查询额度接口
+11. 在长任务里逐条删原片（触发宿主批量删除保护，会杀进程）
+12. 把代码缺陷类异常（KeyError / TypeError / AttributeError）当成业务失败重试
 
 ## 参数默认值
 

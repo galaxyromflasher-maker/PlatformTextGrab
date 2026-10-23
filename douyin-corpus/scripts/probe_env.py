@@ -35,16 +35,24 @@ def check_binary(name: str) -> str | None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--project", default=None)
+    parser.add_argument("--disk-path", default=None, help="检查哪个盘的剩余空间，默认当前目录")
     args = parser.parse_args()
+
+    # 磁盘要按项目所在盘算：在 C 盘执行、项目在 D 盘时，用 cwd 会误报不足
+    disk_target = Path(args.disk_path or args.project or Path.cwd()).expanduser()
+    while not disk_target.exists() and disk_target != disk_target.parent:
+        disk_target = disk_target.parent
 
     report = {
         "checkedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
         "python": sys.version.split()[0],
         "pythonOk": sys.version_info >= (3, 10),
         "modules": {m: check_module(m) for m in ("requests", "openpyxl")},
-        "ffmpeg": check_binary("ffmpeg"),
-        "ffprobe": check_binary("ffprobe"),
-        "diskFreeGB": round(shutil.disk_usage(Path.cwd()).free / 2**30, 1),
+        "ffmpeg": bool(check_binary("ffmpeg")),
+        "ffprobe": bool(check_binary("ffprobe")),
+        "playwright": check_module("playwright"),
+        "diskPath": str(disk_target),
+        "diskFreeGB": round(shutil.disk_usage(disk_target).free / 2**30, 1),
     }
     missing = [m for m, ok in report["modules"].items() if not ok]
     report["ok"] = report["pythonOk"] and not missing and report["ffmpeg"] and report["ffprobe"]

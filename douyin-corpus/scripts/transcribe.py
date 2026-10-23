@@ -41,6 +41,8 @@ TARGET_CHARS = 90
 MAX_SENTENCES = 5
 PROGRESS_EVERY = 20
 CIRCUIT_BREAK = 5
+# 这几类异常说明是代码缺陷而非业务失败，重试没意义，直接中止并打印堆栈
+FATAL_ERRORS = (KeyError, TypeError, AttributeError, NameError, ImportError, IndexError)
 
 
 # ---------- 文本处理 ----------
@@ -176,11 +178,12 @@ class AsrClient:
 
 
 class Runner:
-    def __init__(self, project: Path, key: str, workers: int, limit: int | None) -> None:
+    def __init__(self, project: Path, key: str, workers: int, limit: int | None, cleanup_mp4: bool = False) -> None:
         self.project = project
         self.key = key
         self.workers = workers
         self.limit = limit
+        self.cleanup_mp4 = cleanup_mp4
         self.lock = threading.Lock()
         self.plan = json.loads((project / "供AI查阅" / "plan.json").read_text(encoding="utf-8"))
         self.ledger_path = project / "供AI查阅" / "quota-ledger.json"
@@ -190,6 +193,7 @@ class Runner:
         self.switches: list[dict] = []
         self.stop = threading.Event()
         self.consecutive_fail = 0
+        self.mp4_bytes = 0
         self.log_path = project / "供AI查阅" / "run-log.jsonl"
         self.budget = float(self.ledger.get("budgetCny", 5.0))
 
@@ -258,18 +262,36 @@ class Runner:
         }
         mp4, m4a = work / "media.mp4", work / "audio.m4a"
         started = time.perf_counter()
+        # 断点续跑时 m4a 已存在、download 分支会被跳过，timings 必须提前建好
+        record["timings"] = {}
+        expected = record["durationMs"] / 1000
 
         for attempt in range(1, 4):
             try:
-                if not m4a.exists():
+                need_download = not m4a.exists()
+                if not need_download and expected > 3:
+                    # 续跑前校验音轨完整性，避免截断音频被当成正常音频
+                    try:
+                        actual = probe_duration(m4a)
+                        if abs(actual - expected) > 3:
+                            need_download = True
+                            record["resumedRerepair"] = f"{actual:.1f}s vs {expected:.1f}s"
+                            m4a.unlink(missing_ok=True)
+                    except Exception:  # noqa: BLE001
+                        need_download = True
+                        m4a.unlink(missing_ok=True)
+
+                if need_download:
                     t0 = time.perf_counter()
                     size = download(play_url, mp4)
-                    record["timings"] = {"downloadSeconds": round(time.perf_counter() - t0, 2)}
+                    record["timings"]["downloadSeconds"] = round(time.perf_counter() - t0, 2)
                     t0 = time.perf_counter()
                     extract_audio(mp4, m4a)
                     record["timings"]["extractSeconds"] = round(time.perf_counter() - t0, 2)
                     record["mp4Bytes"] = size
-                    mp4.unlink(missing_ok=True)
+                    self.mp4_bytes += size
+                    if self.cleanup_mp4:
+                        mp4.unlink(missing_ok=True)
 
                 duration = probe_duration(m4a)
                 record["audioDuration"] = round(duration, 1)
@@ -318,6 +340,17 @@ class Runner:
             except Exception as error:  # noqa: BLE001
                 message = f"{type(error).__name__}: {error}"
                 record["error"] = message[:300]
+
+                # 代码缺陷类异常：重试没有意义，立即中止并暴露堆栈
+                if isinstance(error, FATAL_ERRORS):
+                    import traceback
+
+                    print(f"\n[FATAL] {order} 触发代码缺陷，已中止整批：", flush=True)
+                    traceback.print_exc()
+                    record["status"] = "fatal"
+                    self.stop.set()
+                    break
+
                 if QUOTA_HINT.search(message):
                     if self.rotate(message):
                         print(f"  额度或限流触发，已切至 {self.current_model()}", flush=True)
@@ -436,11 +469,17 @@ def main() -> int:
     parser.add_argument("--key-file", default=None)
     parser.add_argument("--workers", type=int, default=3)
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--cleanup-mp4",
+        action="store_true",
+        help="转完即删原片。默认不删：大批量逐条删除会触发宿主的批量删除保护并杀死进程",
+    )
     args = parser.parse_args()
 
-    if not args.key and not args.key_file:
-        raise SystemExit("必须提供 --key 或 --key-file")
-    key = args.key or Path(args.key_file).read_text(encoding="utf-8").strip()
+    key = args.key or (args.key_file and Path(args.key_file).read_text(encoding="utf-8").strip()) or ""
+    key = key or __import__("os").environ.get("DSK", "").strip()
+    if not key:
+        raise SystemExit("必须提供 --key、--key-file，或环境变量 DSK")
 
     project = Path(args.project).resolve()
     rows = list(csv.DictReader((project / "清单" / "works.csv").open(encoding="utf-8-sig")))
@@ -454,8 +493,10 @@ def main() -> int:
         print("没有可处理的任务（检查 works.csv 与 manifest-raw.json 的直链）")
         return 1
 
-    runner = Runner(project, key, args.workers, args.limit)
+    runner = Runner(project, key, args.workers, args.limit, cleanup_mp4=args.cleanup_mp4)
     print(f"待处理 {len(tasks)} 条，并发 {args.workers}，起始模型 {runner.current_model()}", flush=True)
+    if not args.cleanup_mp4:
+        print("原片保留模式（默认）。需要清理时自行批量删除，不要在长任务里逐条删。", flush=True)
     done = 0
     started = time.perf_counter()
     with ThreadPoolExecutor(max_workers=args.workers) as pool:

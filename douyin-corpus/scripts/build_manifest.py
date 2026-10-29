@@ -67,14 +67,17 @@ def forecast(seconds: float, ledger: dict) -> dict:
         take = min(remaining, usable)
         if take <= 0:
             continue
-        over = max(0.0, take - free_left)
-        cost += over * model["unitPriceCnyPerSecond"]
-        plan.append({"model": name, "seconds": round(take), "overageCny": round(over * model["unitPriceCnyPerSecond"], 4)})
+        # take 全部在免费额度内（take <= usable < free_left），不产生超额费用
+        plan.append({"model": name, "seconds": round(take), "overageCny": 0.0})
         remaining -= take
         if remaining <= 0:
             break
     if remaining > 0:
-        plan.append({"model": "（全部额度不足）", "seconds": round(remaining), "overageCny": None})
+        # 免费额度全部用完，剩余部分需要付费（按最便宜的模型单价估算）
+        cheapest = min(m["unitPriceCnyPerSecond"] for m in ledger["models"] if m.get("unitPriceCnyPerSecond"))
+        overage = remaining * cheapest
+        cost += overage
+        plan.append({"model": "（免费额度不足，需付费）", "seconds": round(remaining), "overageCny": round(overage, 2)})
     return {"plan": plan, "costCny": round(cost, 2), "shortfallSeconds": round(max(0.0, remaining))}
 
 
@@ -179,6 +182,7 @@ def main() -> int:
     audio_seconds = sum(int(float(r["时长分钟"]) * 60) for r in rows if r["类型"] == "视频")
     plan = forecast(audio_seconds, ledger)
 
+    zero_dur = [r["序号"] for r in rows if r["类型"] == "视频" and float(r["时长分钟"]) == 0]
     checks = {
         "页面显示总数": page_total,
         "抓取条数": len(items),
@@ -197,6 +201,8 @@ def main() -> int:
         "额度分配": plan["plan"],
         "预计费用CNY": plan["costCny"],
         "额度缺口秒数": plan["shortfallSeconds"],
+        "时长未知条目": zero_dur,
+        "时长未知说明": "duration=0 的条目，可能是图文/音乐作品，转写结果可能为空" if zero_dur else "",
         "生成时间": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
     (project / "供AI查阅" / "checks.json").write_text(

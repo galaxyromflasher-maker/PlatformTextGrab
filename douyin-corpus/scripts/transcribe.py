@@ -16,6 +16,9 @@
 
 from __future__ import annotations
 
+import sys
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 import argparse
 import csv
 import json
@@ -28,6 +31,8 @@ from datetime import datetime
 from pathlib import Path
 
 import requests
+
+import slicer
 
 BASE_API = "https://dashscope.aliyuncs.com/api/v1"
 UA = (
@@ -101,6 +106,10 @@ def download(url: str, dest: Path) -> int:
                             handle.write(chunk)
                             written += len(chunk)
             return written
+        except requests.exceptions.HTTPError as error:
+            if error.response is not None and error.response.status_code == 403:
+                raise RuntimeError("直链已过期（403），请重新抓取主页刷新直链") from error
+            raise
         except (requests.exceptions.ChunkedEncodingError,
                 requests.exceptions.ConnectionError,
                 requests.exceptions.Timeout) as error:
@@ -146,7 +155,8 @@ class AsrClient:
         policy.raise_for_status()
         data = policy.json()["data"]
 
-        key = f"{data['upload_dir']}/{tag}.m4a"
+        import uuid
+        key = f"{data['upload_dir']}/{tag}_{uuid.uuid4().hex[:8]}.m4a"
         form = {
             "OSSAccessKeyId": data["oss_access_key_id"],
             "Signature": data["signature"],
@@ -182,7 +192,13 @@ class AsrClient:
 
         for _ in range(200):
             time.sleep(3)
-            poll = self.session.get(f"{BASE_API}/tasks/{task_id}", timeout=30).json()
+            poll_resp = self.session.get(f"{BASE_API}/tasks/{task_id}", timeout=30)
+            if poll_resp.status_code == 429:
+                time.sleep(10)
+                continue
+            if poll_resp.status_code != 200:
+                raise RuntimeError(f"poll HTTP {poll_resp.status_code}")
+            poll = poll_resp.json()
             status = poll["output"].get("task_status")
             if status == "SUCCEEDED":
                 results = poll["output"].get("results") or []
@@ -267,6 +283,20 @@ class Runner:
         if self.stop.is_set():
             return {"order": order, "status": "pending", "id": wid}
 
+        # 预算熔断：已花费 >= 预算 80% 暂停，100% 停止
+        spent_now = self.ledger.get("spentCny", 0.0)
+        if spent_now >= self.budget:
+            self.stop.set()
+            record["status"] = "pending"
+            record["error"] = f"预算 ¥{self.budget} 已用完（已花 ¥{spent_now:.2f}），停止"
+            meta_path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+            return {"order": order, "status": "pending", "id": wid}
+        if spent_now >= self.budget * 0.8:
+            with self.lock:
+                if not hasattr(self, "_budget_warned"):
+                    self._budget_warned = True
+                    print(f"\n⚠ 预算已达 80%（¥{spent_now:.2f} / ¥{self.budget}），即将暂停", flush=True)
+
         record = {
             "order": order,
             "awemeId": wid,
@@ -324,7 +354,24 @@ class Runner:
                         break
 
                 t0 = time.perf_counter()
-                data = AsrClient(self.key, model).transcribe(m4a, f"{order}_{wid}")
+                asr = AsrClient(self.key, model)
+
+                if duration > slicer.SLICE_THRESHOLD_SEC:
+                    # 长视频走切片路径
+                    print(f"  #{order} 时长 {duration/60:.0f} 分钟，走切片转写", flush=True)
+                    data = slicer.slice_and_transcribe(
+                        m4a, work,
+                        lambda audio_path, tag: asr.transcribe(audio_path, tag),
+                        model,
+                    )
+                    if data is None:
+                        raise RuntimeError("切片转写失败：所有分片均无结果")
+                    record["sliced"] = True
+                    record["sliceCount"] = data.get("_totalSlices", 0)
+                    record["failedSlices"] = data.get("_failedSlices", [])
+                else:
+                    data = asr.transcribe(m4a, f"{order}_{wid}")
+
                 record["timings"]["asrSeconds"] = round(time.perf_counter() - t0, 2)
                 record["model"] = model
                 self.consume(model, duration)
@@ -333,6 +380,15 @@ class Runner:
                     json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
                 sentences = (data.get("transcripts") or [{}])[0].get("sentences", [])
+
+                if not sentences:
+                    # ASR 成功返回但无语音内容——这才是真正的 no_speech
+                    record["status"] = "no_speech"
+                    record["sentences"] = 0
+                    record["paragraphs"] = 0
+                    record["chars"] = 0
+                    break
+
                 (work / "text.txt").write_text(
                     "\n".join(s.get("text", "") for s in sentences), encoding="utf-8"
                 )
@@ -373,7 +429,10 @@ class Runner:
                         print(f"  额度或限流触发，已切至 {self.current_model()}", flush=True)
                         continue
                 if "task FAILED" in message and attempt >= 2:
-                    record["status"] = "no_speech"
+                    # task FAILED 不等于无语音！可能是网络/服务端问题
+                    # 真正的 no_speech 只在 ASR 成功返回但 sentences 为空时判定
+                    record["status"] = "failed"
+                    record["error"] = "ASR 任务失败（非无语音），可重跑：" + message[:150]
                     break
                 with self.lock:
                     self.consecutive_fail += 1
@@ -390,14 +449,52 @@ class Runner:
         self.log({"at": datetime.now().astimezone().isoformat(timespec="seconds"), **record})
         return {"order": order, "status": record["status"], "id": wid, "chars": record.get("chars")}
 
+    # --- 产出自检 ---
+    def self_check(self, results: list[dict]) -> list[dict]:
+        """轻量自检：时长对齐、时间轴单调、字数密度。返回可疑条目。"""
+        suspects = []
+        for r in results:
+            if r.get("status") != "ok":
+                continue
+            wid = r.get("awemeId", "")
+            order = r.get("order", "")
+            work = self.project / "转写" / f"{order}_{wid}"
+            tjson = work / "transcript.json"
+            if not tjson.exists():
+                continue
+            try:
+                data = json.loads(tjson.read_text(encoding="utf-8"))
+                sentences = (data.get("transcripts") or [{}])[0].get("sentences", [])
+                if not sentences:
+                    continue
+                # 1. 末句时间 vs 音频时长（偏差 < 2%）
+                last_end = sentences[-1].get("end_time", 0) / 1000
+                audio_dur = r.get("audioDuration") or 0
+                if audio_dur > 0 and abs(last_end - audio_dur) / audio_dur > 0.02:
+                    suspects.append({"order": order, "id": wid, "issue": f"末句 {last_end:.0f}s vs 音频 {audio_dur:.0f}s，偏差超 2%"})
+                # 2. 时间轴单调
+                prev_end = 0
+                for s in sentences:
+                    if s.get("begin_time", 0) < prev_end:
+                        suspects.append({"order": order, "id": wid, "issue": "时间轴不单调"})
+                        break
+                    prev_end = s.get("end_time", 0)
+                # 3. 字数密度（2-12 字/秒）
+                chars = r.get("chars", 0)
+                if audio_dur > 0:
+                    cps = chars / audio_dur
+                    if cps < 2:
+                        suspects.append({"order": order, "id": wid, "issue": f"字数密度 {cps:.1f} 字/秒偏低，可能截断"})
+            except (json.JSONDecodeError, KeyError, ZeroDivisionError):
+                suspects.append({"order": order, "id": wid, "issue": "transcript.json 解析失败"})
+        return suspects
+
     # --- 汇总 ---
-    def summary(self, rows: list[dict]) -> None:
+    def summary(self, rows: list[dict] | None = None) -> None:
+        """汇总：遍历 转写/ 下所有 meta.json，不依赖本次任务列表。"""
         results = []
-        for row in rows:
-            work = self.project / "转写" / f"{row['序号']}_{row['作品ID']}"
-            meta = work / "meta.json"
-            if meta.exists():
-                results.append(json.loads(meta.read_text(encoding="utf-8")))
+        for meta in sorted((self.project / "转写").glob("*/meta.json")):
+            results.append(json.loads(meta.read_text(encoding="utf-8")))
         ok = [r for r in results if r.get("status") == "ok"]
         no_speech = [r for r in results if r.get("status") == "no_speech"]
         failed = [r for r in results if r.get("status") not in {"ok", "no_speech"}]
@@ -407,6 +504,8 @@ class Runner:
         by_model: dict[str, float] = {}
         for r in ok:
             by_model[r.get("model") or "?"] = by_model.get(r.get("model") or "?", 0) + (r.get("audioDuration") or 0)
+
+        suspects = self.self_check(results)
 
         csv_path = self.project / "转写" / "转写结果.csv"
         with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
@@ -439,13 +538,17 @@ class Runner:
 {settle}
 | 合计 | {int(audio_seconds):,} | **¥{spent:.2f}** | 预算 ¥{self.budget} |
 
+## 产出自检
+{'✅ 全部通过' if not suspects else f'⚠ {len(suspects)} 条可疑，建议抽查：'}
+{chr(10).join(f'- #{s["order"]} {s["issue"]}' for s in suspects[:10]) if suspects else ''}
+
 ## 风险
 - 转写未纠错，同音字错误仍在
 - 数字未经核验，引用需回看原片
 
 ## 已排除
 - 本轮不做纠错、不做内容提炼
-- 未保留视频原片，仅保留音轨
+- {f"已删除视频原片（{self.mp4_bytes/1024**3:.1f} GB），仅保留音轨" if self.cleanup_mp4 else f"保留视频原片（约 {self.mp4_bytes/1024**3:.1f} GB），音轨已提取。可手动清理原片释放空间"}
 
 ## 下一步
 本轮结束。需要继续时回复「审核」。
@@ -468,9 +571,18 @@ class Runner:
             ),
             encoding="utf-8",
         )
+        total = len(ok) + len(no_speech) + len(failed)
+        done_count = len(ok) + len(no_speech)
+        if len(failed) == 0 and done_count == total:
+            status_line = "G3 已完成"
+        elif self.stop.is_set():
+            status_line = f"G3 已中断（{done_count}/{total}，可续跑）"
+        else:
+            status_line = f"G3 进行中（{done_count}/{total}）"
+
         (self.project / "STATUS.md").write_text(
-            f"""阶段：G3 已完成
-待确认：无
+            f"""阶段：{status_line}
+待确认：{'无' if len(failed) == 0 else f'{len(failed)} 条失败需重跑'}
 下一步：需要时回复「审核」
 更新：{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M')}
 """,
@@ -493,7 +605,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    key = args.key or (args.key_file and Path(args.key_file).read_text(encoding="utf-8").strip()) or ""
+    key = args.key or (args.key_file and Path(args.key_file).read_text(encoding="utf-8-sig").strip()) or ""
     key = key or __import__("os").environ.get("DSK", "").strip()
     if not key:
         raise SystemExit("必须提供 --key、--key-file，或环境变量 DSK")
@@ -505,7 +617,17 @@ def main() -> int:
 
     tasks = [(r, urls.get(r["作品ID"], "")) for r in rows if r["类型"] == "视频" and urls.get(r["作品ID"])]
     if args.limit:
-        tasks = tasks[: args.limit]
+        # 先过滤已完成的，再取前 N 条（否则分批跑永远在首批空转）
+        filtered = []
+        for r, u in tasks:
+            work = project / "转写" / f"{r['序号']}_{r['作品ID']}"
+            meta_path = work / "meta.json"
+            if meta_path.exists():
+                prev = json.loads(meta_path.read_text(encoding="utf-8"))
+                if prev.get("status") in {"ok", "no_speech"}:
+                    continue
+            filtered.append((r, u))
+        tasks = filtered[: args.limit]
     if not tasks:
         print("没有可处理的任务（检查 works.csv 与 manifest-raw.json 的直链）")
         return 1
@@ -519,7 +641,11 @@ def main() -> int:
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {pool.submit(runner.process, r, u): r for r, u in tasks}
         for future in as_completed(futures):
-            result = future.result()
+            try:
+                result = future.result()
+            except Exception as exc:
+                result = {"order": "?", "status": "failed", "id": "?", "error": str(exc)[:120]}
+                print(f"  线程异常：{exc}", flush=True)
             done += 1
             if done % PROGRESS_EVERY == 0 or done == len(tasks):
                 spent = runner.ledger.get("spentCny", 0.0)

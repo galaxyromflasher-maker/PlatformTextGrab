@@ -88,14 +88,19 @@ def cmd_resolve(account_id: str, profile: Path) -> int:
     """抖音号 -> 主页 sec_uid"""
     sync_playwright = _import_playwright()
     with sync_playwright() as p:
-        context = _new_context(p, profile, headless=True)
+        context = _new_context(p, profile, headless=False)
         page = context.pages[0] if context.pages else context.new_page()
         page.goto(
             f"https://www.douyin.com/search/{account_id}?type=user",
             wait_until="domcontentloaded",
             timeout=60000,
         )
-        page.wait_for_timeout(5000)
+        # 等搜索结果渲染出来（异步加载，sleep 不可靠）
+        try:
+            page.wait_for_selector('a[href*="/user/"]', state="attached", timeout=20000)
+        except Exception:
+            pass
+        page.wait_for_timeout(2000)
         hrefs = page.eval_on_selector_all('a[href*="/user/"]', "els => els.map(e => e.getAttribute('href'))")
         context.close()
 
@@ -154,7 +159,8 @@ def cmd_capture(url: str, out_path: Path, profile: Path, max_scroll: int = 300) 
         "out": str(out_path),
     }
     if result.get("loginWall"):
-        summary["warning"] = "出现登录墙，只能拿到约 21 条，请先执行 login"
+        summary["error"] = "出现登录墙，清单不完整（约 21 条）。请先执行 login 扫码登录，再重新 capture。"
+        summary["ok"] = False
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 

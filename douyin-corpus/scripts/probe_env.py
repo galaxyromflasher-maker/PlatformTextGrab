@@ -58,13 +58,15 @@ def main() -> int:
     report["ok"] = report["pythonOk"] and not missing and report["ffmpeg"] and report["ffprobe"]
     report["hints"] = []
     if not report["pythonOk"]:
-        report["hints"].append("Python 需 3.10+")
+        report["hints"].append("Python 需 3.10+（Windows 上可能是商店占位别名，见 references/setup-windows.md）")
     if missing:
-        report["hints"].append("缺少依赖：" + ", ".join(missing) + "（pip install " + " ".join(missing) + "）")
+        report["hints"].append(f"缺少依赖：{', '.join(missing)} → pip install {' '.join(missing)}")
     if not report["ffmpeg"]:
-        report["hints"].append("未找到 ffmpeg，请安装并加入 PATH")
+        report["hints"].append("未找到 ffmpeg → 见 references/setup-windows.md 第 3 节（npmmirror 镜像，10 秒装完）")
     if not report["ffprobe"]:
-        report["hints"].append("未找到 ffprobe")
+        report["hints"].append("未找到 ffprobe → 同上，ffmpeg 和 ffprobe 两个都要")
+    if not report.get("playwright"):
+        report["hints"].append("缺少 playwright → pip install playwright（无需 install chromium）")
     if report["diskFreeGB"] < 5:
         report["hints"].append(f"磁盘仅剩 {report['diskFreeGB']} GB，200 条音频约需 1.5 GB")
 

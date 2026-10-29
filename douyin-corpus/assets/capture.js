@@ -1,4 +1,6 @@
 // 抖音主页抓取脚本（在已登录的浏览器页面上下文中执行）
+// 注意：本文件是浏览器页面脚本，由 browser.py 的 addInitScript 注入。
+// 不要用 node 运行！不需要安装 Node.js！
 //
 // 用法（Playwright 等价流程）：
 //   1. 打开 https://www.douyin.com/user/<sec_uid>，等页面渲染完成

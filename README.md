@@ -12,18 +12,14 @@ It walks three gated rounds — plan, manifest, transcription — and stops for 
 
 Each round ends with one table and one short report. Nothing else is required from the operator.
 
+After transcription, run the HTML reader to browse and search the corpus in a single file.
+
 ## Install
 
-Copy the skill folder into your skills directory:
-
-```
-~/.codebuddy/skills/douyin-corpus/
-```
-
-Or clone this repository and copy the folder:
+Clone and copy the skill folder into your skills directory:
 
 ```bash
-git clone https://github.com/WhisperDR/PlatformTextGrab.git
+git clone https://github.com/galaxyromflasher-maker/PlatformTextGrab.git
 cp -r PlatformTextGrab/douyin-corpus ~/.codebuddy/skills/
 ```
 
@@ -35,6 +31,7 @@ cp -r PlatformTextGrab/douyin-corpus ~/.codebuddy/skills/
 | Packages | `requests`, `openpyxl` |
 | ffmpeg / ffprobe | must be on `PATH` |
 | Browser automation | Playwright or equivalent, with a logged-in session |
+| ASR API key | from Alibaba Cloud DashScope (or compatible) |
 
 ## Usage
 
@@ -45,6 +42,14 @@ Use douyin-corpus to build a corpus for this account: <profile link>
 ```
 
 The agent then asks for two things only: the account link, and how to supply the recognition API key (paste once, or a file path).
+
+After the corpus is built, generate the HTML reader:
+
+```
+python scripts/build_reader.py --project <creator-folder>
+```
+
+This produces a single-file HTML with full-text search, no server needed.
 
 ## Structure
 
@@ -59,6 +64,7 @@ douyin-corpus/
 │  ├─ probe_env.py              environment check
 │  ├─ init_project.py           scaffold project folders and ledger
 │  ├─ build_manifest.py         raw capture -> spreadsheet + reconciliation
+│  ├─ build_reader.py           single-file HTML browser with search
 │  └─ transcribe.py             batch transcription with rotation
 └─ assets/
    ├─ capture.js                in-page capture script
@@ -77,12 +83,14 @@ douyin-corpus/
 | Budget pause | 80% |
 | Circuit break | 5 consecutive failures |
 | Progress report | every 20 items or 3 minutes |
+| Model chain | 1M-tier first, rotate before quota exhausts |
 
 ## Safety notes
 
 - API keys are read at runtime and never written to disk or echoed.
 - Original files are never modified; all outputs are new files.
 - A run stops before exceeding the budget, and never falls back to premium-tier models unless explicitly requested.
+- Transcription downloads retry automatically on connection failures.
 
 ## License
 

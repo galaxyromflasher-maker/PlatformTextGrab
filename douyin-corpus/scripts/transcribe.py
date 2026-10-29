@@ -89,22 +89,39 @@ def render_md(title: str, date: str, duration_ms: int, digg: int, url: str, para
 
 def download(url: str, dest: Path) -> int:
     headers = {"User-Agent": UA, "Referer": REFERER, "Accept": "*/*"}
-    with requests.get(url, headers=headers, stream=True, timeout=120) as response:
-        response.raise_for_status()
-        written = 0
-        with dest.open("wb") as handle:
-            for chunk in response.iter_content(chunk_size=1 << 16):
-                if chunk:
-                    handle.write(chunk)
-                    written += len(chunk)
-    return written
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            with requests.get(url, headers=headers, stream=True, timeout=120) as response:
+                response.raise_for_status()
+                written = 0
+                with dest.open("wb") as handle:
+                    for chunk in response.iter_content(chunk_size=1 << 16):
+                        if chunk:
+                            handle.write(chunk)
+                            written += len(chunk)
+            return written
+        except (requests.exceptions.ChunkedEncodingError,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout) as error:
+            last_error = error
+            dest.unlink(missing_ok=True)
+            time.sleep(2 * attempt)
+    raise RuntimeError(f"download failed after 3 attempts: {last_error}")
 
 
 def extract_audio(source: Path, dest: Path) -> None:
-    subprocess.run(
-        ["ffmpeg", "-y", "-v", "error", "-i", str(source), "-vn", "-acodec", "copy", str(dest)],
-        check=True,
-    )
+    # 先试直通复制（快、无损）；遇到 mp3 音轨等格式不兼容 m4a 时降级转 AAC
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-i", str(source), "-vn", "-acodec", "copy", str(dest)],
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-i", str(source), "-vn", "-c:a", "aac", "-b:a", "128k", str(dest)],
+            check=True,
+        )
 
 
 def probe_duration(path: Path) -> float:

@@ -18,32 +18,31 @@
 
 | 模型 | 额度 | 到期 | 档位 |
 |---|---|---|---|
-| `paraformer-v2` | 36K | 每月 1 日重置 · 长期有效 | free-monthly |
-| `paraformer-8k-v2` | 36K | 每月 1 日重置 | free-monthly |
-| `paraformer-realtime-v2` | 36K | 每月 1 日重置 | free-monthly |
-| `fun-asr` | 36K | 2026-12-09 | free-once |
-| `fun-asr-realtime` | 36K | 2026-12-09 | free-once |
-| `qwen3-asr-flash-filetrans` | 36K | 2026-12-09 | free-once |
-| `qwen-audio-3.0-asr-flash-filetrans` | 36K | 2026-12-09 | free-once |
 | `qwen-audio-3.1-asr-flash-filetrans` | 1M | 2026-12-21 | free-once |
+| `fun-asr` | 36K | 2026-12-09 | free-once |
+| `qwen-audio-3.0-asr-flash-filetrans` | 36K | 2026-12-09 | free-once |
+| `paraformer-8k-v2` | 36K | 每月 1 日重置 | free-monthly |
 | **`qwen3-asr-flash`** | 36K | **2027-03-09** | **premium（禁用）** |
+
+> 2026-10-29 实测：`paraformer-v2` 已从免费额度列表消失，不要再依赖它。
+> 同日实测：1M 额度的 `qwen-audio-3.1-asr-flash-filetrans` 跑了 600 条后触发 `AllocationQuota.FreeTierOnly`，
+> 可能是速率限制而非总额度耗尽，自动切换后继续正常。
 
 完整清单（含 TTS、多模态、向量模型）见项目内《当前百炼平台免费额度汇总》。
 
 ## 三、模型链
 
 ```
-1. paraformer-v2                  36K/月，永久刷新，永远先用
-2. fun-asr                        36K，2026-12-09
-3. qwen3-asr-flash-filetrans      36K，2026-12-09
-4. qwen-audio-3.0-asr-flash-filetrans  36K，2026-12-09
-5. qwen-audio-3.1-asr-flash-filetrans  1M，2026-12-21（兜底大池）
+1. qwen-audio-3.1-asr-flash-filetrans   1M，2026-12-21，首选（额度最大）
+2. fun-asr                               36K，2026-12-09
+3. qwen-audio-3.0-asr-flash-filetrans    36K，2026-12-09
+4. paraformer-8k-v2                      36K/月，每月重置
 —— 到此为止
 ```
 
 **禁用** `qwen3-asr-flash`：2027-03 才到期的一次性额度，质量最高，属战略储备，仅用户点名可用。
 
-**为什么 1M 的池子放最后**：额度大但 62 天后过期，属于"用不完也要浪费"的池子。先消耗临期的小额，再动大池，总浪费最小。
+**为什么 1M 的池子放第一**：2026-10-29 实战证明它能跑大批量（600 条零失败），额度远超单次需求。先用它，跑完还有余量；万一触发限制，后面的模型接住。
 
 ## 四、台账结构
 

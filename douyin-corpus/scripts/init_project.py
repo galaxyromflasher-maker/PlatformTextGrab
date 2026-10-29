@@ -22,20 +22,17 @@ from pathlib import Path
 
 # 额度初值（秒）。K=1000, M=1_000_000。见 references/quota-and-models.md
 QUOTA_TABLE = [
-    ("paraformer-v2", "free-monthly", 36_000, 0.00008, None),
-    ("paraformer-8k-v2", "free-monthly", 36_000, 0.00008, None),
-    ("fun-asr", "free-once", 36_000, 0.00022, "2026-12-09"),
-    ("qwen3-asr-flash-filetrans", "free-once", 36_000, 0.00022, "2026-12-09"),
-    ("qwen-audio-3.0-asr-flash-filetrans", "free-once", 36_000, 0.00022, "2026-12-09"),
     ("qwen-audio-3.1-asr-flash-filetrans", "free-once", 1_000_000, 0.00022, "2026-12-21"),
+    ("fun-asr", "free-once", 36_000, 0.00022, "2026-12-09"),
+    ("qwen-audio-3.0-asr-flash-filetrans", "free-once", 36_000, 0.00022, "2026-12-09"),
+    ("paraformer-8k-v2", "free-monthly", 36_000, 0.00008, None),
 ]
 
 MODEL_CHAIN = [
-    "paraformer-v2",
-    "fun-asr",
-    "qwen3-asr-flash-filetrans",
-    "qwen-audio-3.0-asr-flash-filetrans",
     "qwen-audio-3.1-asr-flash-filetrans",
+    "fun-asr",
+    "qwen-audio-3.0-asr-flash-filetrans",
+    "paraformer-8k-v2",
 ]
 
 BANNED_MODELS = ["qwen3-asr-flash"]

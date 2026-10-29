@@ -48,7 +48,7 @@ G1 方案 MD 必须写这一行：
 
 ### 必须当场做完的事
 
-1. 环境体检：执行 `python scripts/probe_env.py`
+1. 环境体检：执行 `python scripts/probe_env.py`（缺什么会告诉你去 `references/setup-windows.md` 怎么装）
 2. 建项目：执行 `python scripts/init_project.py --creator-name <昵称> --creator-id <抖音号>`
 3. 扫码登录，**当场验证是否突破 21 条限制**（未登录主页只放行约 21 条）
 4. 抽 3 条（短/中/长）取直链、各下载 1 条验证可用性
@@ -99,13 +99,16 @@ python scripts/browser.py capture --url <主页URL> --out raw.json --profile <�
 3. 脚本自动处理：模型链切换、额度预判、预算熔断、失败重试、断点续跑、音轨完整性校验
 4. **原片默认保留**（`--cleanup-mp4` 才边跑边删）。大批量逐条删除会触发宿主保护，跑完统一清理
 5. 代码缺陷类异常（KeyError 等）会立即中止并打印堆栈，不参与重试熔断
-4. 每 20 条或每 3 分钟报一行进度
-5. 收尾出 `转写结果.csv` + `G3-转写完成.md` → **结束**
+6. 长视频（>25 分钟）自动走切片转写（`scripts/slicer.py`），分片缓存可断点续跑
+7. 每 20 条报一行进度
+8. 收尾出 `转写结果.csv` + `G3-转写完成.md`（含产出自检） → **结束**
 
 **本轮结束即停**，不自动进入审核，不自动生成阅读包。用户回复「审核」才继续。
 
 模型链、切换条件、熔断阈值见 `references/quota-and-models.md`。
 百炼接口调用细节见 `references/dashscope-asr.md`。
+环境搭建（Python / ffmpeg / 依赖安装）见 `references/setup-windows.md`。
+长视频切片逻辑见 `scripts/slicer.py`。
 
 ---
 
